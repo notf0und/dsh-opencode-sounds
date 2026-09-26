@@ -268,19 +268,29 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
       : undefined,
   }
 
-  // effect and inject are context builtins; everything else is a service.
+  // cordis hands a plugin only the services it declared through `inject`, and
+  // reading any other service off the context throws - the rule that broke 0.2.0.
+  // This models it strictly: everything is a service except the two context
+  // builtins below, so an undeclared read fails the suite even for a service this
+  // harness has never heard of. `declared` is seeded from the plugin's own
+  // `inject` export, and ctx.inject([...]) opens a child scope that adds to it.
+  // If cordis grows another builtin the plugin wants, add it to CTX_BUILTINS.
+  const CTX_BUILTINS = ['effect', 'inject']
   const makeCtx = (declared = []) => new Proxy({}, {
     get(_target, prop) {
       if (prop === 'effect') return (fn) => { effectDisposer = fn() }
       if (prop === 'inject') return (deps, cb) => { cb(makeCtx([...declared, ...deps])) }
-      if (declared.includes(prop) && prop in injectable) return injectable[prop]
+      if (typeof prop === 'symbol' || CTX_BUILTINS.includes(prop)) return undefined
+      if (!declared.includes(prop)) {
+        throw new Error(`cannot get property "${String(prop)}" without inject`)
+      }
+      if (prop in injectable) return injectable[prop]
       if (prop in services) return services[prop]
-      if (prop in injectable) throw new Error(`cannot get property "${String(prop)}" without inject`)
       return undefined
     },
   })
 
-  const ctx = makeCtx()
+  const ctx = makeCtx(Array.isArray(exportsObj.inject) ? exportsObj.inject : [])
 
   const drive = (next) => {
     sessionsSnap = next
