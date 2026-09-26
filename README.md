@@ -57,12 +57,31 @@ An **Ignore subagent events** switch silences the whole channel at once.
 - Six fully independent events, each with its own sound and volume (0–100%).
 - Completion respects **quiet current session**; attention events always ring.
 - User aborts, killed jobs, and `max-tokens` / `blocked` / `interrupted` turns stay silent.
-- Events come from `events.mux` plus `events.host`; mux-open replay of still-pending
-  approval/question frames (refresh recovery) does not ring, and each `rpcId` rings at most once.
-- Falls back to snapshot diffing when the event stream is unavailable or frames fail to unwrap.
+- Detection adapts to the DSH build: where the connection layer exposes an event stream
+  (`events.mux` + `events.host`) it is used, with mux-open replay staying silent and each
+  `rpcId` ringing at most once; on builds without it (0.1.5-rc.3 and later) the plugin reads the
+  client-side fact sources directly (see below).
+- Nothing that is already true when the page loads rings: a request already pending, a goal
+  already blocked or a job already failed is seeded silently.
 - Multiple tabs: the same event rings once (BroadcastChannel tie-break); a lone tab plays
   immediately with no handshake.
 - Config export/import as JSON (IndexedDB audio refs are inlined as data URLs).
+
+## How each sound is detected
+
+| Event | Source (DSH 0.1.5-rc.3+) |
+|---|---|
+| Completion | `turn/end` `completed` in the session's own event window; the list `running` edge as a deferred fallback for sessions whose window is not staged |
+| Failure | `turn/end` `error`, `SessionSnapshot.lastAgentError`, or a background job reaching `failed` |
+| Approval | `uiSession.pendingInteractions`, kind `approval` |
+| User question | `uiSession.pendingInteractions`, kind `question` |
+| Plan review | `uiSession.pendingInteractions`, kind `plan-review` |
+| Goal blocked | the goal projection (`projectionValues.goal.goal.phase`) entering `blocked` |
+| Silent by design | turn ends `aborted` / `blocked` / `max-tokens` / `interrupted`, and jobs `killed` |
+
+Approval, question and plan review are published by the interaction domains themselves, so the
+plugin does not re-derive them from frame shapes. On DSH builds that still expose
+`connection.api.events.mux`, the original frame-based watcher runs instead.
 
 ## Settings panel
 

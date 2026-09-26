@@ -4,6 +4,10 @@
 // Simulates the browser module loader plus a fake ctx, observes playback
 // through fake Web Audio / XHR captures (embedded MP3 data URLs), reads config
 // from a fake localStorage and renders the settings UI with a fake React.
+//
+// The ctx also mirrors the 0.1.5-rc.3 live surface: sessions.binding(id) exposes
+// a lifecycle face (running / lastAgentError / openState) and an event window
+// (turn/end), and uiSession.pendingInteractions is the pending-request feed.
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
@@ -41,7 +45,7 @@ const DEFAULT_MAP = {
 }
 
 // ----- fresh environment per scenario ---------------------------------------
-function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext) {
+function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSessions) {
   const registered = {}
   const bufferPlays = []
   const audioPlays = []
@@ -131,7 +135,7 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext) {
   if (!entry) throw new Error('client bundle must register under the package name (dsh-opencode-sounds)')
   const exportsObj = entry.factory((spec) => (spec === 'react' ? react : undefined))
 
-  let sessionsSnap = {
+  let sessionsSnap = initialSessions || {
     ids: ['s1'], byId: { s1: { id: 's1', running: false } }, current: 's1', jobsBySession: {},
   }
   let sessionsSub = null
@@ -191,10 +195,50 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext) {
   }
   const hostPush = (frame) => hostDeliver({ value: frame, done: false })
 
+  // ----- per-session faces, event windows and pending interactions ----------
+  // These mirror the live 0.1.5-rc.3 client surface: sessions.binding(id) gives
+  // a lifecycle face plus an event window, and uiSession.pendingInteractions is
+  // the root feed of pending approval / question / plan-review requests.
+  const faces = new Map()
+  let turnSeq = 0
+  function faceFor(sid) {
+    if (!faces.has(sid)) {
+      faces.set(sid, {
+        snap: { sessionId: sid, running: false, lastAgentError: null, openState: 'cold', removed: false, blank: false },
+        faceListeners: new Set(),
+        win: { entries: [], hasMore: false, revision: 0, change: { kind: 'replace', entries: [] } },
+        eventListeners: new Set(),
+      })
+    }
+    return faces.get(sid)
+  }
+  const pendingListeners = new Set()
+  let pendingMap = new Map()
+
   const ctx = {
     locale,
     sessions: {
       list: { getSnapshot: () => sessionsSnap, subscribe: (fn) => { sessionsSub = fn; return () => {} } },
+      binding: (sid) => {
+        const f = faceFor(sid)
+        return {
+          sessionId: sid,
+          session: {
+            getSnapshot: () => f.snap,
+            subscribe: (fn) => { f.faceListeners.add(fn); return () => { f.faceListeners.delete(fn) } },
+          },
+          eventSource: {
+            getSnapshot: () => f.win,
+            subscribe: (fn) => { f.eventListeners.add(fn); return () => { f.eventListeners.delete(fn) } },
+          },
+        }
+      },
+    },
+    uiSession: {
+      pendingInteractions: {
+        getSnapshot: () => pendingMap,
+        subscribe: (fn) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn) } },
+      },
     },
     effect: (fn) => { effectDisposer = fn() },
     slots: {
@@ -206,7 +250,19 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext) {
       : undefined,
   }
 
-  const drive = (next) => { sessionsSnap = next; if (sessionsSub) sessionsSub() }
+  const drive = (next) => {
+    sessionsSnap = next
+    // the live client keeps each session face's `running` in step with the list row
+    for (const sid of Object.keys(next.byId || {})) {
+      const f = faceFor(sid)
+      const running = next.byId[sid] && next.byId[sid].running === true
+      if (f.snap.running !== running) {
+        f.snap = Object.assign({}, f.snap, { running })
+        f.faceListeners.forEach((l) => l())
+      }
+    }
+    if (sessionsSub) sessionsSub()
+  }
   const row = (extra) => Object.assign({ id: 's1', running: false }, extra)
 
   const renderSection = (preserveHooks) => {
@@ -235,6 +291,46 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext) {
     pendingTimersMs: (ms) => timers.filter((t) => !t.cleared && !t.fired && t.ms === ms),
     muxPush, muxEnd, hostPush,
     setSessionIds: (ids) => { sessionsSnap.ids = ids },
+    /** Stage or unstage a session's own event window ('open' makes it the turn-end authority). */
+    setOpen: (sid, openState) => {
+      const f = faceFor(sid)
+      f.snap = Object.assign({}, f.snap, { openState })
+      f.faceListeners.forEach((l) => l())
+    },
+    /** The lifecycle face's agent error (the host/agent-error replacement). */
+    setAgentError: (sid, message) => {
+      const f = faceFor(sid)
+      f.snap = Object.assign({}, f.snap, { lastAgentError: message })
+      f.faceListeners.forEach((l) => l())
+    },
+    /** Append a live turn/end to a session's event window. */
+    turnEnd: (sid, kind) => {
+      const f = faceFor(sid)
+      const entry = { type: 'event', event: { type: 'turn/end', seq: ++turnSeq, time: Date.now(), data: { turn: 1, reason: { kind } } } }
+      f.win = {
+        entries: f.win.entries.concat([entry]),
+        hasMore: false,
+        revision: f.win.revision + 1,
+        change: { kind: 'append', entries: [entry] },
+      }
+      f.eventListeners.forEach((l) => l())
+    },
+    /** Publish (or clear) a pending interaction for a session. */
+    setPending: (sid, kind) => {
+      pendingMap = new Map(pendingMap)
+      pendingMap.set(sid, { sessionId: sid, key: 'k:' + sid, kind })
+      pendingListeners.forEach((l) => l())
+    },
+    clearPending: (sid) => {
+      pendingMap = new Map(pendingMap)
+      pendingMap.delete(sid)
+      pendingListeners.forEach((l) => l())
+    },
+    /** Seed a request before the plugin loads (must not ring). */
+    seedPending: (sid, kind) => {
+      pendingMap = new Map(pendingMap)
+      pendingMap.set(sid, { sessionId: sid, key: 'k:' + sid, kind })
+    },
     getBroadcastClass: () => fakeWindow.BroadcastChannel,
     countOf: (pred) => created.filter(pred).length,
   }
@@ -481,6 +577,126 @@ const turnEnd = (sid, kind) => ({
 }
 
 // ===========================================================================
+// 6b) live 0.1.5-rc.3 surface: pending interactions, agent errors, session
+//     event windows (turn/end) and the nested goal projection
+// ===========================================================================
+{
+  const env = makeEnv(undefined)
+  env.exportsObj.apply(env.ctx)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  env.setPending('s1', 'approval')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.approval, 'uiSession approval rings the approval sound')
+  const afterApproval = env.playedUrls().length
+  env.setPending('s1', 'approval')
+  ok(env.playedUrls().length === afterApproval, 'a repeated publish of the same pending kind stays silent')
+  env.clearPending('s1')
+  env.setPending('s1', 'question')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.question, 'uiSession question rings the question sound')
+  env.clearPending('s1')
+  env.setPending('s1', 'plan-review')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['plan-review'], 'uiSession plan-review rings the plan-review sound')
+  env.clearPending('s1')
+  env.setPending('s1', 'unrelated-domain')
+  ok(env.playedUrls().length === afterApproval + 2, 'an unrelated interaction domain is ignored')
+}
+{
+  const env = makeEnv(undefined)
+  env.seedPending('s1', 'approval')
+  env.exportsObj.apply(env.ctx)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedUrls().length === 0, 'a request already pending at load stays silent (refresh replay)')
+}
+{
+  const env = makeEnv(undefined)
+  env.exportsObj.apply(env.ctx)
+  env.drive({
+    ids: ['s1', 's2'],
+    byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false }) },
+    current: 's1',
+    jobsBySession: {},
+  })
+  env.setAgentError('s1', 'boom')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.failure, 'lastAgentError rings the failure sound')
+  const n = env.playedUrls().length
+  env.setAgentError('s1', 'boom')
+  ok(env.playedUrls().length === n, 'the same lastAgentError does not ring twice')
+  env.setAgentError('s1', 'boom again')
+  ok(env.playedUrls().length === n, 'same-session failures inside the dedupe window ring once')
+  env.setAgentError('s2', 'boom')
+  ok(env.playedUrls().length === n + 1, 'a failure on another session rings independently')
+}
+{
+  const env = makeEnv(undefined)
+  env.exportsObj.apply(env.ctx)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { goal: { phase: 'active' } } } }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedUrls().length === 0, 'an active goal is silent')
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { goal: { phase: 'blocked' } } } }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['goal-blocked'], 'a nested goal projection entering blocked rings')
+  const n = env.playedUrls().length
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { goal: { phase: 'blocked' } } } }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedUrls().length === n, 'a goal staying blocked does not repeat')
+}
+{
+  const env = makeEnv(undefined)
+  env.exportsObj.apply(env.ctx)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { phase: 'blocked' } } }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['goal-blocked'], 'a flat goal projection entering blocked still rings')
+}
+{
+  // A staged window owns turn ends: completion and failure are exact and abort is silent.
+  const env = makeEnv(undefined)
+  env.exportsObj.apply(env.ctx)
+  env.setOpen('s1', 'open')
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedUrls().length === 0, 'a live session waits for its turn/end instead of ringing on the running edge')
+  env.turnEnd('s1', 'aborted')
+  ok(env.playedUrls().length === 0, 'an aborted turn in a live window stays silent')
+  env.turnEnd('s1', 'max-tokens')
+  ok(env.playedUrls().length === 0, 'a max-tokens turn in a live window stays silent')
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  env.turnEnd('s1', 'completed')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.completion, 'a completed turn in a live window rings completion')
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  env.turnEnd('s1', 'error')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.failure, 'an errored turn in a live window rings failure')
+}
+{
+  const env = makeEnv(undefined)
+  env.exportsObj.apply(env.ctx)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.completion, 'a cold session (window not staged) rings completion on the running edge')
+}
+
+{
+  // Reload replay: everything already true when the plugin loads is seeded, not rung.
+  const env = makeEnv(undefined, false, false, false, {
+    ids: ['s1'],
+    byId: { s1: { id: 's1', running: false, projectionValues: { goal: { goal: { phase: 'blocked' } } } } },
+    current: 's1',
+    jobsBySession: { s1: [{ id: 'j1', kind: 'bash', label: 'x', status: 'failed' }] },
+  })
+  env.seedPending('s1', 'question')
+  env.exportsObj.apply(env.ctx)
+  ok(env.playedUrls().length === 0, 'a blocked goal, pending question and failed job present at load stay silent')
+}
+{
+  const env = makeEnv({ subagentApprovalSound: 'yup-06' })
+  env.exportsObj.apply(env.ctx)
+  env.drive({
+    ids: ['s1', 's2'],
+    byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false, origin: 'subagent' }) },
+    current: 's1',
+    jobsBySession: {},
+  })
+  env.setPending('s2', 'approval')
+  ok(env.playedKeys().slice(-1)[0] === 'yup-06', 'a subagent pending interaction routes to the subagent channel')
+}
+
+// ===========================================================================
 // 7) mux path: turn ends, jobs, attention, open-burst replay, disposal
 // ===========================================================================
 ;(async () => {
@@ -708,6 +924,32 @@ const turnEnd = (sid, kind) => ({
     env.muxPush({ rpcId: 'q-live', payload: { type: 'question/requested', sessionId: 's1', questions: [{ text: 'plain looking question' }] } })
     await tick()
     ok(env.playedKeys().includes('alert-09'), 'list pendingInteraction=plan-review overrides a plain question frame')
+    env.getEffectDisposer()()
+  }
+
+  // 13) a live session whose turn/end never arrives still rings (deferred fallback)
+  {
+    const env = makeEnv(undefined)
+    env.exportsObj.apply(env.ctx)
+    env.setOpen('s1', 'open')
+    env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+    env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+    ok(env.playedUrls().length === 0, 'a live session arms a fallback instead of ringing at once')
+    ok(env.pendingTimersMs(250).length === 1, 'the turn-end fallback is armed for 250ms')
+    env.fireTimersMs(250)
+    ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.completion, 'the fallback rings completion when no turn/end arrives')
+    env.getEffectDisposer()()
+  }
+  {
+    const env = makeEnv(undefined)
+    env.exportsObj.apply(env.ctx)
+    env.setOpen('s1', 'open')
+    env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+    env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+    env.turnEnd('s1', 'completed')
+    const after = env.playedUrls().length
+    env.fireTimersMs(250)
+    ok(env.playedUrls().length === after, 'an arriving turn/end suppresses the fallback (single ring)')
     env.getEffectDisposer()()
   }
 

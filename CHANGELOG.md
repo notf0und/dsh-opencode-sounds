@@ -5,6 +5,30 @@ The entries below 0.1.0 are the upstream history (translated to English); they a
 provenance of the event-detection engine stays readable. Upstream changes are pulled with
 `git fetch upstream && git merge upstream/main`.
 
+## 0.2.0 (fork) — every event fires on DSH 0.1.5-rc.3
+
+The upstream watcher was written against a DSH client that this build no longer has: it needs
+`connection.api.events.mux`, which 0.1.5-rc.3 does not provide at all (the `connection` service
+exposes only `isLoopback` / `generation` / `state` / `rpc` / `reconnect` /
+`registerGenerationSource` / `start`). Its snapshot fallback then read
+`SessionSummary.pendingInteraction` and `projectionValues.goal.phase`, neither of which exists
+either — so approvals, questions, plan reviews and blocked goals were silent, and an errored
+turn rang the completion sound.
+
+- Approval / question / plan review now come from `uiSession.pendingInteractions`, the root feed
+  the interaction domains publish (`kind` is `approval`, `question` or `plan-review`).
+- Goal blocked reads the real projection shape, `projectionValues.goal.goal.phase`.
+- Failure now also watches `SessionSnapshot.lastAgentError`, the replacement for the old
+  `host/agent-error` frame.
+- Turn ends are read from each session's own event window
+  (`sessions.binding(id).eventSource`): `completed` rings completion, `error` rings failure, and
+  `aborted` / `blocked` / `max-tokens` / `interrupted` stay silent. A session whose window is not
+  staged falls back to the `running` edge, deferred 250 ms so a live `turn/end` can win.
+- Reload replay stays silent: a request already pending, a goal already blocked or a job already
+  failed at page load are seeded, never rung.
+- The frame-based mux watcher is kept untouched for DSH builds that still expose it.
+- Client tests grew to 117 assertions covering all of the above.
+
 ## 0.1.1 (fork) — label and default tweaks
 
 - Renamed the settings menu entry to **Sounds** and the master switch to **Enabled**.
