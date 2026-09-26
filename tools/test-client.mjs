@@ -35,9 +35,9 @@ const DEFAULT_MAP = {
   completion: 'bip-bop-01',
   approval: 'staplebops-06',
   question: 'bip-bop-03',
-  'plan-review': 'bip-bop-03',
+  'plan-review': 'bip-bop-05',
   'goal-blocked': 'nope-03',
-  failure: 'nope-03',
+  failure: 'nope-07',
 }
 
 // ----- fresh environment per scenario ---------------------------------------
@@ -266,7 +266,10 @@ const turnEnd = (sid, kind) => ({
   ok(slotReg.registration.opts.id === 'dsh-opencode-sounds', 'section id is dsh-opencode-sounds')
   ok(typeof slotReg.registration.opts.label() === 'string', 'section label thunk returns a string')
   const dict = env.dictionaries.get('dsh-opencode-sounds/en')
-  ok(!!dict && dict['section.title'] === 'Sound notifications', 'English dictionary registered under the new namespace')
+  ok(!!dict && dict['section.title'] === 'Sounds', 'the settings menu entry is labelled Sounds')
+  ok(!!dict && dict['control.enabled'] === 'Enabled', 'the master switch is labelled Enabled')
+  ok(!!dict && dict['sound.complete'] === 'Completed', 'the completion event is labelled Completed')
+  ok(!!dict && dict['event.goalBlocked'] === 'Blocked', 'the goal-blocked event is labelled Blocked')
   ok(!env.languages.has('zh'), 'no Chinese locale is registered (English only)')
 }
 
@@ -302,7 +305,7 @@ const turnEnd = (sid, kind) => ({
   const env = makeEnv(undefined)
   env.exportsObj.apply(env.ctx)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { phase: 'blocked' } } }) }, current: 's1', jobsBySession: {} })
-  ok(env.playedKeys()[0] === DEFAULT_MAP['goal-blocked'], `goal blocked plays the opencode error sound (${DEFAULT_MAP.failure})`)
+  ok(env.playedKeys()[0] === DEFAULT_MAP['goal-blocked'], `goal blocked keeps its own sound (${DEFAULT_MAP['goal-blocked']})`)
 }
 {
   const env = makeEnv(undefined)
@@ -420,6 +423,9 @@ const turnEnd = (sid, kind) => ({
   ok(dropdowns.length === 6, 'six event rows each render a dropdown')
   ok(dropdowns[0].props['data-kind'] === 'completion' && dropdowns[1].props['data-kind'] === 'approval', 'dropdowns are named per event kind')
   ok(dropdowns[0].props.value === DEFAULT_MAP.completion, 'the completion dropdown shows the opencode default')
+  const rowTitles = env.created.filter((n) => n.type === 'span' && n.props.className === 'dns-notify-title').map((n) => n.children[0])
+  ok(rowTitles[0] === 'Enabled', 'the master switch row renders the Enabled label')
+  ok(rowTitles.includes('Completed') && rowTitles.includes('Blocked'), 'event rows render the renamed Completed / Blocked labels')
   ok(env.created.filter((n) => n.type === 'input' && n.props.type === 'file' && n.props.accept === 'audio/*').length === 0, 'no file picker while a pack sound is selected')
 }
 {

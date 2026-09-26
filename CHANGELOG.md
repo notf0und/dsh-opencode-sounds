@@ -5,6 +5,15 @@ The entries below 0.1.0 are the upstream history (translated to English); they a
 provenance of the event-detection engine stays readable. Upstream changes are pulled with
 `git fetch upstream && git merge upstream/main`.
 
+## 0.1.1 (fork) — label and default tweaks
+
+- Renamed the settings menu entry to **Sounds** and the master switch to **Enabled**.
+- Renamed the completion event label to **Completed** and goal blocked to **Blocked**
+  (the completion row previously rendered the raw `sound.complete` i18n key, because that
+  dictionary entry was dropped along with the old sound names in 0.1.0).
+- Main-agent defaults: plan review is now `bip-bop-05` (was `bip-bop-03`) and failure is
+  `nope-07` (was `nope-03`). Goal blocked keeps `nope-03`.
+
 ## 0.1.0 (fork) — opencode sound pack
 
 - Replaced the built-in Web Audio synthesized chimes (ding / chime / bell / complete / success)

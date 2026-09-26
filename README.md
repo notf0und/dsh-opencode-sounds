@@ -36,9 +36,9 @@ Defaults mirror opencode's built-in **"OpenCode Default"** sound pack
 | Completion | `turn/end` `reason.kind === 'completed'`; job → `completed` | `done` / `default` | `bip-bop-01` |
 | Approval request | `approval/requested` frame | `permission` | `staplebops-06` |
 | User question | `question/requested`, not plan-review shaped | `question` | `bip-bop-03` |
-| Plan review | `question/requested` classified as plan-review | `question` | `bip-bop-03` |
+| Plan review | `question/requested` classified as plan-review | `question` | `bip-bop-05` |
 | Goal blocked | goal projection enters `blocked` | `error` | `nope-03` |
-| Failure | job → `failed`; `turn/end` `error`; `host/agent-error` | `error` | `nope-03` |
+| Failure | job → `failed`; `turn/end` `error`; `host/agent-error` | `error` | `nope-07` |
 
 ### Separate subagent channel
 
@@ -66,7 +66,8 @@ An **Ignore subagent events** switch silences the whole channel at once.
 
 ## Settings panel
 
-Settings → **Sound notifications**. A **Main agent / Subagents** tab bar switches between the
+Settings → **Sounds**. A master **Enabled** switch turns the whole plugin on or off, and a
+**Main agent / Subagents** tab bar switches between the
 six main event rows and the subagent panel. Each row has a sound dropdown (opencode's whole
 pack, then None, then Local file), a **Play** button, and a volume slider; picking a sound
 previews it. Choosing **Local file** reveals a file picker; the file is stored in IndexedDB
@@ -85,7 +86,7 @@ dsh plugin --profile web add file:/home/gonzalo/code/dsh-opencode-sounds
 dsh plugin --profile web add github:notf0und/dsh-opencode-sounds
 ```
 
-Then restart `dsh web` (or refresh the page) and open Settings → Sound notifications.
+Then restart `dsh web` (or refresh the page) and open Settings → Sounds.
 
 ### Manual install
 
