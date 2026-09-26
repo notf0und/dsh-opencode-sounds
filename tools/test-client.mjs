@@ -57,7 +57,7 @@ const DEFAULT_MAP = {
 }
 
 // ----- fresh environment per scenario ---------------------------------------
-function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSessions) {
+function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSessions, opts) {
   const registered = {}
   const bufferPlays = []
   const audioPlays = []
@@ -227,11 +227,15 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
   const pendingListeners = new Set()
   let pendingMap = new Map()
 
-  // uiSession is a *service* published by dsh-client-ui-session, not a plain
-  // property: cordis only hands it to a context that declared it, which is what
-  // ctx.inject(['uiSession'], cb) exists for. Reading it off an undeclared
-  // context throws - the bug 0.2.0 shipped - so the proxy below enforces that
-  // rule and the suite now fails if the regression comes back.
+  // Two context flavours are modelled, because the plugin is loaded two ways:
+  //  - a plain cordis context (profile bundle), where `inject` is a builtin and
+  //    any undeclared service read throws - the rule that broke 0.2.0;
+  //  - the dynamic hot-mount facade the market uses, which forwards only a small
+  //    verb allowlist (no `inject`) and routes every other property through
+  //    rejectGuard, which throws. `ctx.get(name)` is the one accessor that needs
+  //    no declaration in either, so the plugin must use it for uiSession.
+  const facade = !!opts && opts.dynamicFacade === true
+  let uiSessionAvailable = !(opts && opts.uiSession === 'later')
   const uiSession = {
     pendingInteractions: {
       getSnapshot: () => pendingMap,
@@ -268,27 +272,43 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
       : undefined,
   }
 
-  // cordis hands a plugin only the services it declared through `inject`, and
-  // reading any other service off the context throws - the rule that broke 0.2.0.
-  // This models it strictly: everything is a service except the two context
-  // builtins below, so an undeclared read fails the suite even for a service this
-  // harness has never heard of. `declared` is seeded from the plugin's own
-  // `inject` export, and ctx.inject([...]) opens a child scope that adds to it.
-  // If cordis grows another builtin the plugin wants, add it to CTX_BUILTINS.
+  // Context builtins that need no declaration, and the verbs the dynamic facade
+  // forwards (mirrors the runner's CTX_VERBS). Anything else off the context is a
+  // service read: allowed only when declared, otherwise it throws.
   const CTX_BUILTINS = ['effect', 'inject']
-  const makeCtx = (declared = []) => new Proxy({}, {
-    get(_target, prop) {
-      if (prop === 'effect') return (fn) => { effectDisposer = fn() }
-      if (prop === 'inject') return (deps, cb) => { cb(makeCtx([...declared, ...deps])) }
-      if (typeof prop === 'symbol' || CTX_BUILTINS.includes(prop)) return undefined
-      if (!declared.includes(prop)) {
-        throw new Error(`cannot get property "${String(prop)}" without inject`)
-      }
-      if (prop in injectable) return injectable[prop]
-      if (prop in services) return services[prop]
-      return undefined
-    },
-  })
+  const FACADE_VERBS = ['effect', 'on', 'once', 'provide', 'timeout', 'interval', 'setTimeout', 'setInterval', 'throttle', 'debounce']
+
+  const lookup = (name) => {
+    if (name === 'uiSession') return uiSessionAvailable ? injectable.uiSession : undefined
+    return name in services ? services[name] : undefined
+  }
+
+  const makeCtx = (declared = []) => {
+    if (facade) {
+      return new Proxy({}, {
+        get(_target, prop) {
+          if (typeof prop !== 'string') return undefined
+          if (prop === 'effect') return (fn) => { effectDisposer = fn() }
+          if (prop === 'get') return (name) => lookup(name)
+          if (FACADE_VERBS.includes(prop)) return () => undefined
+          if (declared.includes(prop)) return lookup(prop)
+          throw new Error(`service "${String(prop)}" is not declared by your plugin.`)
+        },
+      })
+    }
+    return new Proxy({}, {
+      get(_target, prop) {
+        if (prop === 'effect') return (fn) => { effectDisposer = fn() }
+        if (prop === 'inject') return (deps, cb) => { cb(makeCtx([...declared, ...deps])) }
+        if (typeof prop === 'symbol' || CTX_BUILTINS.includes(prop)) return undefined
+        if (prop === 'get') return (name) => lookup(name)
+        if (!declared.includes(prop)) {
+          throw new Error(`cannot get property "${String(prop)}" without inject`)
+        }
+        return lookup(prop)
+      },
+    })
+  }
 
   const ctx = makeCtx(Array.isArray(exportsObj.inject) ? exportsObj.inject : [])
 
@@ -373,6 +393,8 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
       pendingMap = new Map(pendingMap)
       pendingMap.set(sid, { sessionId: sid, key: 'k:' + sid, kind })
     },
+    /** Simulate uiSession being provided after apply (late service availability). */
+    enableUiSession: () => { uiSessionAvailable = true },
     getBroadcastClass: () => fakeWindow.BroadcastChannel,
     countOf: (pred) => created.filter(pred).length,
   }
@@ -736,6 +758,40 @@ const turnEnd = (sid, kind) => ({
   })
   env.setPending('s2', 'approval')
   ok(env.playedKeys().slice(-1)[0] === 'yup-06', 'a subagent pending interaction routes to the subagent channel')
+}
+
+// ===========================================================================
+// 6c) dynamic hot-mount facade (the market path) and a late uiSession provider
+// ===========================================================================
+{
+  const env = makeEnv(undefined, false, false, false, undefined, { dynamicFacade: true })
+  applyClient(env)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedKeys()[0] === DEFAULT_MAP.completion, 'under the dynamic facade the plugin applies and plays completion')
+  env.setPending('s1', 'approval')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.approval, 'under the dynamic facade uiSession is reached via ctx.get (approval rings)')
+  env.clearPending('s1')
+  env.setPending('s1', 'plan-review')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['plan-review'], 'under the dynamic facade plan review rings')
+  env.clearPending('s1')
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { goal: { phase: 'blocked' } } } }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['goal-blocked'], 'under the dynamic facade goal blocked rings')
+  env.getEffectDisposer()()
+}
+{
+  const env = makeEnv(undefined, false, false, false, undefined, { uiSession: 'later' })
+  applyClient(env)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  env.setPending('s1', 'approval')
+  ok(env.playedUrls().length === 0, 'a request published before uiSession exists is not seen')
+  env.enableUiSession()
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  ok(env.playedUrls().length === 0, 'the late provider seeds the already-pending request without ringing')
+  env.clearPending('s1')
+  env.setPending('s1', 'question')
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.question, 'a request published after the late provider arrives rings')
+  env.getEffectDisposer()()
 }
 
 // ===========================================================================

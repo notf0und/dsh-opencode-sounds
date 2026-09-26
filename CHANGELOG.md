@@ -5,6 +5,24 @@ The entries below 0.1.0 are the upstream history (translated to English); they a
 provenance of the event-detection engine stays readable. Upstream changes are pulled with
 `git fetch upstream && git merge upstream/main`.
 
+## 0.2.2 (fork) — acquire uiSession through ctx.get
+
+0.2.1 stopped reading `ctx.uiSession` directly, but replaced it with
+`ctx.inject(['uiSession'], cb)`. That works on a plain cordis context and is *not* available
+when the DSH client hot-mounts a plugin: the dynamic facade forwards only
+`effect / on / once / provide / timeout / interval / setTimeout / setInterval / throttle /
+debounce` plus the services the plugin declared in `inject`, and every other property read goes
+through `rejectGuard`, which **throws**. So a market-installed (hot-mounted) copy would have
+failed to apply exactly like 0.2.0 did.
+
+- `uiSession` is now resolved with `ctx.get('uiSession')` — the documented service accessor, which
+  needs no declaration on a cordis context and is explicitly allowed by the dynamic facade —
+  retried from the session-list check so a late provider is still picked up. `uiSession` remains
+  optional: a surface that never publishes it keeps the other five event kinds working.
+- The client test harness can now build its fake context in **dynamic-facade mode**, modelling
+  that verb allowlist and the throwing `rejectGuard`, and a `uiSession: 'later'` mode for a
+  provider that appears after apply. Applying the client under the facade is asserted clean.
+
 ## 0.2.1 (fork) — hotfix: apply() no longer throws without inject
 
 0.2.0 read `ctx.uiSession` directly in the apply body while the client `inject` list was still
