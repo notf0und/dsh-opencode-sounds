@@ -795,6 +795,76 @@ const turnEnd = (sid, kind) => ({
 }
 
 // ===========================================================================
+// 6d) plan-review contract: the host question shape -> kind -> sound
+//
+// `exit_plan_mode` (dsh-plan-mode) asks this exact question, and the client
+// (dsh-client-ui-user-questions `planReviewOf`) promotes it to kind
+// 'plan-review' only while every clause holds. Both halves are pinned here, so a
+// change on either side cannot silently downgrade plan review to the question
+// sound - the card would still appear, just wrong.
+// ===========================================================================
+const PLAN_REVIEW_QUESTION = {
+  id: 'plan-review',
+  header: 'Plan review',
+  question: 'Approve this plan and leave plan mode?',
+  detail: '# Make the plan-review sound fire\n\nStep 1: verify the host question shape.',
+  options: [
+    { label: 'Approve', description: 'Leave plan mode and carry out the plan.' },
+    { label: 'Keep planning', description: 'Stay in plan mode; feedback goes back to the model.' },
+  ],
+  intent: { kind: 'plan-review', approve: 'Approve' },
+}
+
+/** The client's classification clauses, transcribed from planReviewOf. */
+function classifyQuestion(questions) {
+  if (!Array.isArray(questions) || questions.length !== 1) return 'question'
+  const q = questions[0]
+  const intent = q && q.intent
+  if (!intent || intent.kind !== 'plan-review' || q.detail === undefined) return 'question'
+  if (q.multiSelect === true) return 'question'
+  const options = q.options || []
+  if (options.length > 2) return 'question'
+  if (!options.some((o) => o && o.label === intent.approve)) return 'question'
+  return 'plan-review'
+}
+
+{
+  ok(classifyQuestion([PLAN_REVIEW_QUESTION]) === 'plan-review', "the host's exit_plan_mode question classifies as plan-review")
+  ok(
+    classifyQuestion([Object.assign({}, PLAN_REVIEW_QUESTION, { detail: undefined })]) === 'question',
+    'a plan review with no plan detail degrades to the question sound',
+  )
+  ok(
+    classifyQuestion([Object.assign({}, PLAN_REVIEW_QUESTION, {
+      options: PLAN_REVIEW_QUESTION.options.concat([{ label: 'Third' }]),
+    })]) === 'question',
+    'more than two options degrades to the question sound',
+  )
+  ok(
+    classifyQuestion([Object.assign({}, PLAN_REVIEW_QUESTION, {
+      options: PLAN_REVIEW_QUESTION.options.map((o) => ({ label: 'Not the approve label', description: o.description })),
+    })]) === 'question',
+    'no approve-labelled option degrades to the question sound',
+  )
+  ok(
+    classifyQuestion([Object.assign({}, PLAN_REVIEW_QUESTION, { multiSelect: true })]) === 'question',
+    'a multi-select plan review degrades to the question sound',
+  )
+}
+{
+  // End to end: whatever the classification returns is what the plugin rings.
+  const env = makeEnv(undefined)
+  applyClient(env)
+  env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
+  env.setPending('s1', classifyQuestion([PLAN_REVIEW_QUESTION]))
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['plan-review'], 'the classified plan-review interaction rings the plan-review sound')
+  env.clearPending('s1')
+  env.setPending('s1', classifyQuestion([Object.assign({}, PLAN_REVIEW_QUESTION, { detail: undefined })]))
+  ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.question, 'a degraded plan review rings the question sound instead')
+  env.getEffectDisposer()()
+}
+
+// ===========================================================================
 // 7) mux path: turn ends, jobs, attention, open-burst replay, disposal
 // ===========================================================================
 ;(async () => {

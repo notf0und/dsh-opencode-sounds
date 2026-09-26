@@ -83,6 +83,12 @@ Approval, question and plan review are published by the interaction domains them
 plugin does not re-derive them from frame shapes. On DSH builds that still expose
 `connection.api.events.mux`, the original frame-based watcher runs instead.
 
+Plan review only exists while **plan mode** is active: `exit_plan_mode` raises the review question,
+and the client classifies it as `plan-review` from that question's `intent` and its `detail` (the plan
+itself). If that shape ever changes the card still appears but would sound like a plain question, so
+the shape is pinned by a contract fixture in the client tests. A plan review raised inside a subagent
+session uses the subagent channel, where it is silent by default.
+
 ## Settings panel
 
 Settings → **Sounds**. A master **Enabled** switch turns the whole plugin on or off, and a
