@@ -1,15 +1,15 @@
 {
-  "name": "@ai-galaxy/dsh-sound",
-  "version": "0.4.1",
-  "description": "DeepSeek Harness plugin: per-event task-completion and attention sounds for turn-end / approval / question / plan-review / goal-blocked / task-failure, each with its own sound (built-in synth, local audio file) and volume, with a separate subagent channel (Web UI)",
+  "name": "dsh-opencode-sounds",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin: opencode's notification sound pack (alert / bip-bop / staplebops / nope / yup) for turn-end, approval, question, plan-review, goal-blocked and task-failure events, each with its own sound and volume, plus a separate subagent channel (Web UI)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AI-Galaxy-GPU/dsh-sound.git"
+    "url": "git+https://github.com/notf0und/dsh-opencode-sounds.git"
   },
-  "homepage": "https://github.com/AI-Galaxy-GPU/dsh-sound#readme",
+  "homepage": "https://github.com/notf0und/dsh-opencode-sounds#readme",
   "bugs": {
-    "url": "https://github.com/AI-Galaxy-GPU/dsh-sound/issues"
+    "url": "https://github.com/notf0und/dsh-opencode-sounds/issues"
   },
   "type": "module",
   "main": "./lib/index.js",
@@ -26,10 +26,10 @@
   },
   "files": [
     "lib",
+    "assets",
     "screenshots.json",
     "cordis.patch.yml",
     "README.md",
-    "README.zh.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
@@ -38,8 +38,9 @@
     "access": "public"
   },
   "scripts": {
+    "build": "node tools/build-sounds.mjs",
     "test": "node tools/test-host.mjs && node tools/test-client.mjs",
-    "check": "node --check lib/index.js && node --check lib/client.js"
+    "check": "node --check lib/index.js && node --check lib/client.js && node tools/build-sounds.mjs --check"
   },
   "keywords": [
     "dsh",
@@ -48,10 +49,9 @@
     "plugin",
     "notification",
     "sound",
+    "opencode",
     "ringtone",
-    "subagent",
-    "tts",
-    "voice"
+    "subagent"
   ],
   "engines": {
     "node": ">=20"

@@ -1,6 +1,7 @@
-# dsh-sound bundle layer — applied when a profile lists this
-# bundle（package.json 的 dsh.bundle.patch 指向本文件）。
-# `name` 是包名（从 profile 的 node_modules 解析），不是相对路径。
+# dsh-opencode-sounds bundle layer — applied when a profile lists this bundle
+# (package.json's dsh.bundle.patch points at this file).
+# `name` is the package name (resolved from the profile's node_modules), not a
+# relative path.
 - insert:
-    - id: dsh-sound
-      name: '@ai-galaxy/dsh-sound'
+    - id: dsh-opencode-sounds
+      name: dsh-opencode-sounds

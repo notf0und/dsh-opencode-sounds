@@ -1,73 +1,76 @@
-# dsh-sound
+# dsh-opencode-sounds
 
-English | [中文](README.zh.md)
+A DeepSeek Harness (DSH) **Web UI** plugin that plays [opencode](https://github.com/anomalyco/opencode)'s
+notification sound pack when a task finishes or something needs a human.
 
-A DeepSeek Harness (DSH) plugin for the **Web UI**: play a customizable sound when a task
-finishes, and an attention sound whenever something needs a human.
+It is a fork of [`@ai-galaxy/dsh-sound`](https://github.com/AI-Galaxy-GPU/dsh-sound) (MIT) that
+replaces the built-in synthesized chimes with opencode's real audio assets, and makes the
+plugin English-only. The event-detection engine, the settings panel and the subagent channel
+come from upstream; the sound pack, the defaults and the translations are this fork's.
 
-> 📬 **Submitted to [Awesome DSH Plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)** — [PR #752](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/752) (pending maintainer approval)
+## Sound pack
 
-## Screenshots
+Built-in sounds are exactly opencode's, in opencode's order:
 
-![dsh-sound settings](assets/screenshots/sound-image.png)
-
-## Features
-
-### Six independent events
-
-Each event type has its **own sound and its own volume** (0–100%):
-
-| Event | Detection | Default sound |
+| Family | Count | Ids |
 |---|---|---|
-| Turn end / background task completed | `turn/end` with `reason.kind === 'completed'`; job → `completed` | Chime |
-| Approval request | `approval/requested` frame | Ding |
-| User question | `question/requested` frame (not plan-review shaped) | Ding |
-| Plan review | `question/requested` frame classified as plan-review | Ding |
-| Goal blocked | goal projection enters `blocked` | Ding |
-| Background / loop failure | job → `failed`; `turn/end` `error`; `host/agent-error` | Bell |
+| Alert | 10 | `alert-01` … `alert-10` |
+| Bip-bop | 10 | `bip-bop-01` … `bip-bop-10` |
+| Staplebops | 7 | `staplebops-01` … `staplebops-07` |
+| Nope | 12 | `nope-01` … `nope-12` |
+| Yup | 6 | `yup-01` … `yup-06` |
 
-- **Completion** respects the “quiet current session” option; **attention** events (approval /
-  question / plan-review / goal-blocked / failure) always ring.
-- User abort, killed jobs, and `max-tokens` / `blocked` / `interrupted` turns stay silent.
-- Events come from `events.mux` plus `events.host`. Mux-open replay of still-pending
-  approval/question frames (refresh recovery) does not ring; each `rpcId` rings at most once.
-- When the event stream is unavailable or frames fail to unwrap, the plugin falls back to
-  snapshot diffing.
-- **Multiple tabs**: the same event rings only once (BroadcastChannel tie-break). A single
-  tab plays immediately, with no 40 ms handshake.
+Plus **None** (silent) and **Local file** (your own audio file, stored in the browser).
+
+The MP3s live in `assets/audio/` and are inlined into `lib/client.js` as base64 data URLs by
+`tools/build-sounds.mjs`, because the DSH client loads a plugin as a single CJS factory with no
+relative-module resolver.
+
+## Defaults
+
+Defaults mirror opencode's built-in **"OpenCode Default"** sound pack
+(`packages/tui/src/attention.ts` at the tag recorded in `assets/audio/PROVENANCE.md`):
+
+| DSH event | Detection | opencode source | Default sound |
+|---|---|---|---|
+| Completion | `turn/end` `reason.kind === 'completed'`; job → `completed` | `done` / `default` | `bip-bop-01` |
+| Approval request | `approval/requested` frame | `permission` | `staplebops-06` |
+| User question | `question/requested`, not plan-review shaped | `question` | `bip-bop-03` |
+| Plan review | `question/requested` classified as plan-review | `question` | `bip-bop-03` |
+| Goal blocked | goal projection enters `blocked` | `error` | `nope-03` |
+| Failure | job → `failed`; `turn/end` `error`; `host/agent-error` | `error` | `nope-03` |
 
 ### Separate subagent channel
 
-Subagent-originated events are detected and routed independently from the main agent:
+Subagent-originated events (one-shot `kind: 'subagent'` jobs and sessions marked
+`origin: 'subagent'` / `parentId`) have their own sounds and volumes:
 
-- **One-shot subagent jobs** — a `session/jobs` entry with `kind === 'subagent'` (each
-  parallel delegation completing used to ring the main completion sound; now it does not).
-- **Subagent sessions** — events whose session row is marked `origin: 'subagent'` /
-  `parentId` (continuable subagents), including child-session turn ends, approvals,
-  questions, goal projections, and failures.
+| Subagent event | Default sound |
+|---|---|
+| Completion | `yup-01` (opencode's `subagent_done`) |
+| Approval / question / plan review / goal blocked / failure | `none` (silent) |
 
-The settings panel adds a **子代理事件 / Subagent Events** section with six rows (same sound
-sources and per-row volume as the main events) plus an **ignore all subagent events** master
-switch. All six subagent sounds default to **mute**; main-agent events are unchanged.
+An **Ignore subagent events** switch silences the whole channel at once.
 
-### Sound sources
+## Features
 
-Each event picks one sound from a **Radio.Button group** in the settings panel:
+- Six fully independent events, each with its own sound and volume (0–100%).
+- Completion respects **quiet current session**; attention events always ring.
+- User aborts, killed jobs, and `max-tokens` / `blocked` / `interrupted` turns stay silent.
+- Events come from `events.mux` plus `events.host`; mux-open replay of still-pending
+  approval/question frames (refresh recovery) does not ring, and each `rpcId` rings at most once.
+- Falls back to snapshot diffing when the event stream is unavailable or frames fail to unwrap.
+- Multiple tabs: the same event rings once (BroadcastChannel tie-break); a lone tab plays
+  immediately with no handshake.
+- Config export/import as JSON (IndexedDB audio refs are inlined as data URLs).
 
-- **Built-in synthesized sounds** — Ding / Chime / Bell / Complete / Success, generated live
-  with Web Audio, no audio files required.
-- **Mute** — silence that event.
-- **Local file** — choose any MP3/WAV/etc. file; a **file picker appears below the event row**
-  once selected. Uploaded files are stored in IndexedDB (`dsh-sound-audio`), immune to the
-  localStorage quota.
+## Settings panel
 
-### Settings panel (Settings → 声音通知 / Sound Notification)
-
-The master switch and config export/import stay visible; a **主 Agent / 子代理** tab bar
-switches the panel between the six main event rows and the subagent panel (its own six rows
-plus the 「忽略子代理事件」/ ignore-all-subagent-events switch). Each event row has a volume
-slider on the title row and a Radio.Group of Radio.Button options below — click to select
-and play; a local-file row with a choose/replace button appears when 本地文件 is selected.
+Settings → **Sound notifications**. A **Main agent / Subagents** tab bar switches between the
+six main event rows and the subagent panel. Each row has a sound dropdown (opencode's whole
+pack, then None, then Local file), a **Play** button, and a volume slider; picking a sound
+previews it. Choosing **Local file** reveals a file picker; the file is stored in IndexedDB
+(`dsh-opencode-sounds-audio`), so the localStorage quota never limits it.
 
 ## Install
 
@@ -75,133 +78,91 @@ Requires a DSH version with bundle-plugin support (`dsh.profile.bundles` + `dsh.
 and `pnpm` on PATH (`corepack enable` or `npm i -g pnpm`).
 
 ```sh
-# One command: pnpm installs the package and adds it to the profile's bundle layer
-dsh plugin --profile web add @ai-galaxy/dsh-sound
+# From this checkout
+dsh plugin --profile web add file:/home/gonzalo/code/dsh-opencode-sounds
 
-# Restart the server (or refresh the page), then open Settings → 声音通知
+# Or from GitHub
+dsh plugin --profile web add github:notf0und/dsh-opencode-sounds
 ```
 
-Other profiles work the same way: `dsh plugin --profile <name> add @ai-galaxy/dsh-sound`.
+Then restart `dsh web` (or refresh the page) and open Settings → Sound notifications.
 
-To track unreleased `main`, install from the GitHub source instead:
+### Manual install
 
-```sh
-dsh plugin --profile web add github:AI-Galaxy-GPU/dsh-sound
-```
+1. Add the package to `$DSH_HOME/profiles/web/package.json` — both a dependency and a bundle:
+   ```json
+   "dependencies": { "dsh-opencode-sounds": "file:/home/gonzalo/code/dsh-opencode-sounds" },
+   "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-opencode-sounds"] } }
+   ```
+2. `pnpm --dir "$DSH_HOME/profiles/web" install`
+3. Remove the old plugin: `dsh plugin --profile web remove @ai-galaxy/dsh-sound`
+4. Restart `dsh web`.
 
-### Manual install (without pnpm)
-
-1. Copy this package and its runtime deps (`@deepseek-ai/schemastery`,
-   `@deepseek-ai/cosmokit`, `@standard-schema/spec`) into
-   `$DSH_HOME/profiles/web/node_modules/`.
-2. Append `"@ai-galaxy/dsh-sound"` to `dsh.profile.bundles` in
-   `$DSH_HOME/profiles/web/package.json`.
-3. Restart `dsh web`.
+> The profile uses `nodeLinker: hoisted`, which **copies** `file:` dependencies into
+> `node_modules` at install time. Edits to this checkout do not reach the running app until you
+> re-run `pnpm --dir "$DSH_HOME/profiles/web" install` (or replace the copied directory with a
+> symlink). The web server reads bundle content per request, so a browser hard-refresh is
+> enough afterwards — no server restart needed.
 
 ## Configuration storage
 
-- The browser half persists its configuration in **localStorage** (key
-  `dsh-sound:config`), sanitizing every read and filling defaults. Uploaded
-  local music files are stored in **IndexedDB** (`dsh-sound-audio`) instead —
-  no localStorage quota limits.
-- Config keys: `enabled`, `quietCurrent`, `ignoreSubagent`, and six main sound + six main
-  volume fields — `completionSound` / `approvalSound` / `questionSound` / `planReviewSound` /
-  `goalBlockedSound` / `failureSound` (builtin key, `none`, `local`, `data:` URL,
-  or `audio:<id>`) and `completionVolume` … `failureVolume` (0–1) — plus the matching
-  `subagentCompletionSound` … `subagentFailureSound` / `subagentCompletionVolume` …
-  `subagentFailureVolume` pairs for the subagent channel (all sounds default to `none`).
-  `localFiles` keeps the last chosen local file per event (`completion`, … and
-  `subagent-completion`, …) so switching to a built-in sound and back does not drop it.
-- **0.2.0 migration**: older configs are upgraded automatically — `defaultSound`
-  becomes `completionSound`, voice/TTS values degrade to the per-event default,
-  and `workspaces` / `debounceMs` / global `volume` / voice settings are dropped.
-- **Export / import**: the settings panel downloads the full config as JSON
-  (IndexedDB audio references are inlined as data URLs) and restores it from a
-  JSON file — moving browsers or machines does not require reconfiguration.
-- The host half also registers the `dsh-sound` settings namespace: on rc.6 the
-  settings API allowlist (`WEB_SETTINGS_NAMESPACES` in `dsh-host-apiproxy`) does not expose
-  third-party namespaces to browsers, so the client does not depend on `settingsScope` today;
-  the registration keeps the migration path open for future releases.
-
-## Compatibility & capability disclosure
-
-**Compatibility**
-
-- Node.js: `>=20` (`engines.node`).
-- DSH: verified on `0.1.5-alpha.1`, `0.1.5-alpha.2`, `0.1.5-rc.1`, `0.1.5-rc.2` —
-  declared as `compatible` in `dsh.compatibility.dshReleases`; the plugin was also
-  smoke-tested end-to-end (settings panel + live event sounds) on a source build of
-  `0.1.3-alpha.1`.
-- Verification (2026-09-13): each declared version passed a disposable-profile cycle —
-  `dsh plugin --profile web add <tarball>` → `dsh web --no-open` boots and serves the
-  plugin bundle (`@ai-galaxy/dsh-sound/client.js` present in the boot page, no plugin
-  load errors) → `dsh plugin --profile web remove @ai-galaxy/dsh-sound` leaves the
-  profile clean. Each run used a temporary `DSH_HOME`, deleted afterwards.
-
-**Dependencies**
-
-- Host half: `@deepseek-ai/schemastery` (settings schema) plus the peer
-  `@deepseek-ai/cordis`. No other runtime dependencies.
-- Client half: React, `@deepseek-ai/dsh-client-runtime`, and
-  `@deepseek-ai/dsh-client-ui-settings` are provided by the host application through
-  the client module table; the package ships no copies of them.
-
-**Capabilities and permissions**
-
-- Local files: the settings panel opens the browser's own file picker for an audio
-  file the user selects; the audio is stored in IndexedDB (`dsh-sound-audio`). There is
-  no filesystem access outside the browser sandbox and no automatic file scanning.
-- Storage: configuration lives in `localStorage` (`dsh-sound:config`), audio files in
-  IndexedDB.
-- No network requests, no external services, no shell or command execution, no
-  credentials, no native artifacts, and no install lifecycle scripts
-  (`preinstall` / `install` / `postinstall` / `prepare` are absent).
-
-**Failure bounds**
-
-- Playback failures (browser autoplay policy, unsupported audio) stay silent; the UI
-  keeps working.
-- Unavailable IndexedDB/localStorage degrades to in-memory configuration; unreadable
-  audio references are ignored.
-- Unavailable or unparseable event streams degrade to session-snapshot diffing;
-  malformed frames are ignored without crashing.
-- Every configuration read is sanitized against the known field set and defaults.
+- Client config: **localStorage**, key `dsh-opencode-sounds:config`, sanitized on every read.
+- Local audio files: **IndexedDB**, `dsh-opencode-sounds-audio`.
+- Sound values: an opencode pack id, `none`, `local`, a `data:` URL, or an `audio:<id>` ref.
+- Fields: `enabled`, `quietCurrent`, `ignoreSubagent`, the six main sound + volume pairs
+  (`completionSound` … `failureSound`, `completionVolume` … `failureVolume`) and the six
+  subagent pairs (`subagentCompletionSound` … `subagentFailureVolume`). `localFiles` keeps the
+  last chosen local file per event so switching away and back does not drop it.
+- The host also registers the `dsh-opencode-sounds` settings namespace. The rc.6 settings API
+  allowlist (`WEB_SETTINGS_NAMESPACES`) does not expose third-party namespaces to browsers, so
+  the client uses localStorage today; the registration keeps the migration path open.
 
 ## Development
 
 ```sh
-npm test      # 100+ assertions across host and client halves (Node only, no browser needed)
-npm run check # syntax check
+npm install
+npm test        # host + client behavioural tests (Node only, no browser needed)
+npm run check   # syntax check plus a check that the embedded pack is up to date
+npm run build   # re-embed assets/audio/*.mp3 into lib/client.js
 ```
 
 Layout:
 
-> **Profile development note**: the profile's pnpm uses `nodeLinker: hoisted`,
-> which COPIES `file:` dependencies into `node_modules` at install time —
-> edits to this checkout do not reach the running app until you either
-> re-run `pnpm --dir ~/.dsh/profiles/web update @ai-galaxy/dsh-sound` or replace the
-> copied directory with a symlink to this checkout. The web server reads
-> bundle content per request (only the boot-page rev hash is cached at
-> startup), so after refreshing the copy a browser hard-refresh (Cmd+Shift+R)
-> is enough — no server restart needed.
-
 - `lib/index.js` — host half: registers the settings namespace (schema + defaults)
-- `lib/client.js` — browser bundle: event detection, sound engine
-  (Web Audio / IndexedDB audio), settings panel
+- `lib/client.js` — browser bundle: event detection, sound engine, settings panel
 - `lib/types/index.d.ts` — host-side type declarations
-- `cordis.patch.yml` — bundle patch layer (inserts the `dsh-sound` row)
-- `tools/` — tests and verification scripts (not shipped in the npm package)
+- `assets/audio/` — opencode's sound files (`.mp3` embedded, `.aac` kept alongside)
+- `cordis.patch.yml` — bundle patch layer (inserts the `dsh-opencode-sounds` row)
+- `tools/` — tests, the sound-pack builder, verification scripts
 
-## Publish
+## Keeping up with upstream
 
-Published as `@ai-galaxy/dsh-sound` (requires membership of the `ai-galaxy` npm org;
-`publishConfig.access` is already `public`).
+This repo is a fork, so upstream fixes stay easy to pull. `origin` is this fork and `upstream`
+is the original plugin:
 
 ```sh
-npm login                       # npm account (2FA recommended)
-npm publish --access public
+git remote -v
+# origin    git@github.com:notf0und/dsh-opencode-sounds.git   (this fork)
+# upstream  https://github.com/AI-Galaxy-GPU/dsh-sound.git    (original)
+
+git fetch upstream
+git merge upstream/main      # or: git rebase upstream/main
 ```
 
-## License
+Most upstream work lands in the event-detection engine, where this fork is untouched; conflicts
+are normally confined to the sound definitions, the defaults and the settings UI. After a merge,
+re-run `npm run build && npm test`.
 
-[MIT](LICENSE)
+Updating the sound pack itself means fetching new files from opencode and re-embedding them:
+
+```sh
+# copy new audio into assets/audio/, refresh PROVENANCE.md, then:
+npm run build && npm test
+```
+
+## Attribution & license
+
+- Forked from [`@ai-galaxy/dsh-sound`](https://github.com/AI-Galaxy-GPU/dsh-sound) — MIT.
+- Sound files from [opencode](https://github.com/anomalyco/opencode)
+  (`packages/ui/src/assets/audio`, tag `v1.18.32`) — MIT. See `assets/audio/PROVENANCE.md`.
+- This fork: [MIT](LICENSE).
