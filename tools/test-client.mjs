@@ -18,6 +18,18 @@ const ok = (cond, label) => {
   else { failures++; console.log('FAIL', label) }
 }
 
+// Apply the client half through a guard: a plugin that throws during apply (the
+// classic case being a service read it never declared) is reported as a failure
+// rather than aborting the whole run with a stack trace.
+const applyClient = (env) => {
+  try {
+    env.exportsObj.apply(env.ctx)
+  } catch (err) {
+    failures++
+    console.log('FAIL client apply() threw:', err.message)
+  }
+}
+
 // ----- the embedded opencode pack, read straight out of the bundle ----------
 const SOUND_SRC = (() => {
   const m = source.match(/var SOUND_SRC = (\{[\s\S]*?\n    \})/)
@@ -215,7 +227,20 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
   const pendingListeners = new Set()
   let pendingMap = new Map()
 
-  const ctx = {
+  // uiSession is a *service* published by dsh-client-ui-session, not a plain
+  // property: cordis only hands it to a context that declared it, which is what
+  // ctx.inject(['uiSession'], cb) exists for. Reading it off an undeclared
+  // context throws - the bug 0.2.0 shipped - so the proxy below enforces that
+  // rule and the suite now fails if the regression comes back.
+  const uiSession = {
+    pendingInteractions: {
+      getSnapshot: () => pendingMap,
+      subscribe: (fn) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn) } },
+    },
+  }
+  const injectable = { uiSession }
+
+  const services = {
     locale,
     sessions: {
       list: { getSnapshot: () => sessionsSnap, subscribe: (fn) => { sessionsSub = fn; return () => {} } },
@@ -234,13 +259,6 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
         }
       },
     },
-    uiSession: {
-      pendingInteractions: {
-        getSnapshot: () => pendingMap,
-        subscribe: (fn) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn) } },
-      },
-    },
-    effect: (fn) => { effectDisposer = fn() },
     slots: {
       inject: (name, cb) => { slotReg = { name, registration: cb() } },
       register: (opts, comp) => ({ opts, comp }),
@@ -249,6 +267,20 @@ function makeEnv(seededConfig, withMux, withBroadcast, noAudioContext, initialSe
       ? { api: { events: { mux: () => muxIterable, host: () => hostIterable } } }
       : undefined,
   }
+
+  // effect and inject are context builtins; everything else is a service.
+  const makeCtx = (declared = []) => new Proxy({}, {
+    get(_target, prop) {
+      if (prop === 'effect') return (fn) => { effectDisposer = fn() }
+      if (prop === 'inject') return (deps, cb) => { cb(makeCtx([...declared, ...deps])) }
+      if (declared.includes(prop) && prop in injectable) return injectable[prop]
+      if (prop in services) return services[prop]
+      if (prop in injectable) throw new Error(`cannot get property "${String(prop)}" without inject`)
+      return undefined
+    },
+  })
+
+  const ctx = makeCtx()
 
   const drive = (next) => {
     sessionsSnap = next
@@ -356,7 +388,7 @@ const turnEnd = (sid, kind) => ({
   ok(PACK_KEYS.length === 45, 'embedded pack carries 45 opencode sounds')
   const missing = PACK_KEYS.filter((k) => !(SOUND_SRC[k] || '').startsWith('data:audio/mpeg;base64,'))
   ok(missing.length === 0, 'every embedded sound is a base64 MPEG data URL')
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   const slotReg = env.getSlotReg()
   ok(slotReg && slotReg.name === 'settings.section', 'registered into settings.section slot')
   ok(slotReg.registration.opts.id === 'dsh-opencode-sounds', 'section id is dsh-opencode-sounds')
@@ -374,38 +406,38 @@ const turnEnd = (sid, kind) => ({
 // ===========================================================================
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 'other', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 'other', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP.completion, `turn end plays the opencode default completion sound (${DEFAULT_MAP.completion})`)
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, pendingInteraction: 'approval' }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP.approval, `approval plays the opencode permission sound (${DEFAULT_MAP.approval})`)
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, pendingInteraction: 'question' }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP.question, `question plays the opencode question sound (${DEFAULT_MAP.question})`)
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, pendingInteraction: 'plan-review' }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP['plan-review'], 'plan review plays the mapped opencode sound')
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { phase: 'blocked' } } }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP['goal-blocked'], `goal blocked keeps its own sound (${DEFAULT_MAP['goal-blocked']})`)
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'j1', kind: 'bash', label: 'x', status: 'running' }] } })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'j1', kind: 'bash', label: 'x', status: 'failed', finishedAt: 2 }] } })
   ok(env.playedKeys()[0] === DEFAULT_MAP.failure, `job failure plays the opencode error sound (${DEFAULT_MAP.failure})`)
@@ -416,35 +448,35 @@ const turnEnd = (sid, kind) => ({
 // ===========================================================================
 {
   const env = makeEnv({ completionSound: 'alert-05' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === 'alert-05', 'a configured pack id plays that exact sound')
 }
 {
   const env = makeEnv({ completionSound: 'none' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedUrls().length === 0, '"none" stays silent')
 }
 {
   const env = makeEnv({ completionSound: 'not-a-real-sound' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP.completion, 'an unknown sound value is sanitized back to the default')
 }
 {
   const env = makeEnv({ completionSound: 'data:audio/mp3;base64,AAAA' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.xhrUrls[0] === 'data:audio/mp3;base64,AAAA' && env.bufferPlays.length === 1, 'a custom data URL is decoded and played through Web Audio')
 }
 {
   const env = makeEnv({ completionSound: 'data:audio/mp3;base64,BB' }, false, false, true)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.audioPlays.length === 1 && env.audioPlays[0] === 'data:audio/mp3;base64,BB', 'without Web Audio it falls back to the Audio element')
@@ -455,7 +487,7 @@ const turnEnd = (sid, kind) => ({
 // ===========================================================================
 {
   const env = makeEnv({ defaultSound: 'alert-03', attentionSound: 'ding', volume: 0.5, debounceMs: 400, voiceName: 'X' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === 'alert-03', 'legacy defaultSound migrates into completionSound')
@@ -463,14 +495,14 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv({ defaultSound: 'voice:all done!', failureSound: 'voice' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP.completion, 'a legacy voice value degrades to the kind default')
 }
 {
   const env = makeEnv({ enabled: 'yes', completionVolume: 'loud', completionSound: 42 })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys()[0] === DEFAULT_MAP.completion, 'garbage config is sanitized to safe defaults')
@@ -481,14 +513,14 @@ const turnEnd = (sid, kind) => ({
 // ===========================================================================
 {
   const env = makeEnv({ completionSound: 'alert-01', completionVolume: 0.4, approvalVolume: 1 })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.gains[0] === 0.4, 'completionVolume scales the playback gain')
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   const after = env.playedUrls().length
@@ -498,7 +530,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv({ quietCurrent: true })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedUrls().length === 0, 'quietCurrent keeps the session being viewed silent')
@@ -509,7 +541,7 @@ const turnEnd = (sid, kind) => ({
 // ===========================================================================
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.renderUI()
   const values = optionValues(env)
   const firstRow = values.slice(0, 47)
@@ -526,7 +558,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.renderUI()
   const dropdown = selects(env)[0]
   dropdown.props.onChange({ target: { value: 'yup-04' } })
@@ -536,7 +568,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv({ completionSound: 'audio:a1', failureSound: 'data:audio/mp3;base64,AA' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.renderUI()
   const audioInputs = env.created.filter((n) => n.type === 'input' && n.props.type === 'file' && n.props.accept === 'audio/*')
   ok(audioInputs.length === 2, 'file pickers appear for events backed by a local file')
@@ -548,7 +580,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv({ completionSound: 'audio:a1' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.renderUI()
   selects(env)[0].props.onChange({ target: { value: 'alert-02' } })
   const afterBuiltin = configOf(env)
@@ -560,7 +592,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.renderUI()
   const tabs = env.created.filter((n) => n.type === 'button' && n.props.role === 'tab')
   ok(tabs.length === 2 && tabs[0].props['aria-selected'] === 'true', 'main tab is active by default')
@@ -582,7 +614,7 @@ const turnEnd = (sid, kind) => ({
 // ===========================================================================
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   env.setPending('s1', 'approval')
   ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.approval, 'uiSession approval rings the approval sound')
@@ -602,13 +634,13 @@ const turnEnd = (sid, kind) => ({
 {
   const env = makeEnv(undefined)
   env.seedPending('s1', 'approval')
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedUrls().length === 0, 'a request already pending at load stays silent (refresh replay)')
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({
     ids: ['s1', 's2'],
     byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false }) },
@@ -627,7 +659,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { goal: { phase: 'active' } } } }) }, current: 's1', jobsBySession: {} })
   ok(env.playedUrls().length === 0, 'an active goal is silent')
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { goal: { phase: 'blocked' } } } }) }, current: 's1', jobsBySession: {} })
@@ -638,14 +670,14 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, projectionValues: { goal: { phase: 'blocked' } } }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP['goal-blocked'], 'a flat goal projection entering blocked still rings')
 }
 {
   // A staged window owns turn ends: completion and failure are exact and abort is silent.
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.setOpen('s1', 'open')
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
@@ -665,7 +697,7 @@ const turnEnd = (sid, kind) => ({
 }
 {
   const env = makeEnv(undefined)
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
   env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
   ok(env.playedKeys().slice(-1)[0] === DEFAULT_MAP.completion, 'a cold session (window not staged) rings completion on the running edge')
@@ -680,12 +712,12 @@ const turnEnd = (sid, kind) => ({
     jobsBySession: { s1: [{ id: 'j1', kind: 'bash', label: 'x', status: 'failed' }] },
   })
   env.seedPending('s1', 'question')
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   ok(env.playedUrls().length === 0, 'a blocked goal, pending question and failed job present at load stay silent')
 }
 {
   const env = makeEnv({ subagentApprovalSound: 'yup-06' })
-  env.exportsObj.apply(env.ctx)
+  applyClient(env)
   env.drive({
     ids: ['s1', 's2'],
     byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false, origin: 'subagent' }) },
@@ -702,7 +734,7 @@ const turnEnd = (sid, kind) => ({
 ;(async () => {
   {
     const env = makeEnv({ questionSound: 'alert-01', planReviewSound: 'yup-02', goalBlockedSound: 'nope-01' }, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.muxPush(turnEnd('s1', 'completed'))
     await tick()
     ok(env.playedKeys().includes(DEFAULT_MAP.completion), 'mux turn/end completed plays the completion sound')
@@ -761,7 +793,7 @@ const turnEnd = (sid, kind) => ({
   // 8) open-burst replay + rpcId dedupe + wrapped envelopes + host errors
   {
     const env = makeEnv(undefined, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.muxPush({ rpcId: 'replay-ap', payload: { type: 'approval/requested', sessionId: 's1', approvalId: 'ap1' } })
     await tick()
     ok(env.playedUrls().length === 0, 'open-burst replay of approval/requested is silent')
@@ -776,7 +808,7 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv({ failureSound: 'nope-05' }, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.hostPush({ rpcId: 'he1', payload: { type: 'host/agent-error', sessionId: 's1', message: 'boom' } })
     await tick()
     ok(env.playedKeys().includes('nope-05'), 'host/agent-error plays the failure sound')
@@ -786,7 +818,7 @@ const turnEnd = (sid, kind) => ({
   // 9) robustness: disposed sessions, malformed frames, unwrap fallback, backoff
   {
     const env = makeEnv(undefined, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.muxPush({ type: 'session/jobs', sessionId: 's1', jobs: [{ id: 'j1', kind: 'bash', label: 'x', status: 'running' }] })
     await tick()
     env.setSessionIds([])
@@ -800,7 +832,7 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv(undefined, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.muxEnd()
     await tick()
     ok(env.pendingTimersMs(800).length === 1, 'reconnect uses the 800ms base delay')
@@ -818,7 +850,7 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv(undefined, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     for (let i = 0; i < 8; i++) env.muxPush({ rpcId: 'bad-' + i })
     await tick()
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
@@ -830,28 +862,28 @@ const turnEnd = (sid, kind) => ({
   // 10) subagent channel
   {
     const env = makeEnv(undefined)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1', 's2'], byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: true, origin: 'subagent' }) }, current: 's1', jobsBySession: {} })
     env.drive({ ids: ['s1', 's2'], byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false, origin: 'subagent' }) }, current: 's1', jobsBySession: {} })
     ok(env.playedKeys()[0] === 'yup-01', 'a subagent session turn end plays the opencode subagent_done sound (yup-01)')
   }
   {
     const env = makeEnv({ subagentCompletionSound: 'none' })
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1', 's2'], byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: true, origin: 'subagent' }) }, current: 's1', jobsBySession: {} })
     env.drive({ ids: ['s1', 's2'], byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false, origin: 'subagent' }) }, current: 's1', jobsBySession: {} })
     ok(env.playedUrls().length === 0, 'a subagent session turn end can be silenced explicitly')
   }
   {
     const env = makeEnv(undefined)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'subagent-1', kind: 'subagent', label: 'x', status: 'running' }] } })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'subagent-1', kind: 'subagent', label: 'x', status: 'completed', finishedAt: 2 }] } })
     ok(env.playedKeys()[0] === 'yup-01', 'subagent job completion plays the opencode subagent_done sound (yup-01)')
   }
   {
     const env = makeEnv({ subagentCompletionSound: 'alert-07', subagentFailureSound: 'nope-02' })
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'subagent-1', kind: 'subagent', label: 'x', status: 'running' }] } })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'subagent-1', kind: 'subagent', label: 'x', status: 'completed', finishedAt: 2 }] } })
     ok(env.playedKeys().includes('alert-07'), 'a configured subagent completion sound is used')
@@ -861,14 +893,14 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv({ ignoreSubagent: true, subagentCompletionSound: 'alert-07' })
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'subagent-1', kind: 'subagent', label: 'x', status: 'running' }] } })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: { s1: [{ id: 'subagent-1', kind: 'subagent', label: 'x', status: 'completed', finishedAt: 2 }] } })
     ok(env.playedUrls().length === 0, 'ignoreSubagent mutes subagent events even when sounds are configured')
   }
   {
     const env = makeEnv({ subagentCompletionSound: 'alert-08' }, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1', 's2'], byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false, origin: 'subagent' }) }, current: 's1', jobsBySession: {} })
     env.muxPush(turnEnd('s2', 'completed'))
     await tick()
@@ -877,7 +909,7 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv({ subagentApprovalSound: 'yup-03' }, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1', 's2'], byId: { s1: env.row({ running: false }), s2: env.row({ id: 's2', running: false, origin: 'subagent' }) }, current: 's1', jobsBySession: {} })
     env.fireTimersMs(0)
     env.muxPush({ type: 'approval/requested', sessionId: 's2', approvalId: 'ap9', toolName: 'x' })
@@ -897,7 +929,7 @@ const turnEnd = (sid, kind) => ({
       if (seen && seen.t === 'hello') other.postMessage({ t: 'hello-ack' })
       if (seen && seen.t === 'intent') other.postMessage({ t: 'intent', key: seen.key, nonce: 0 })
     }
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
     ok(seen && seen.t === 'intent' && seen.key === 'session:s1', 'the play intent is broadcast to other tabs')
@@ -907,7 +939,7 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv(undefined, false, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
     ok(env.playedKeys().includes(DEFAULT_MAP.completion), 'a lone tab plays immediately without waiting for a handshake')
@@ -917,7 +949,7 @@ const turnEnd = (sid, kind) => ({
   // 12) pendingInteraction from the snapshot beats the frame shape
   {
     const env = makeEnv({ planReviewSound: 'alert-09', questionSound: 'yup-05' }, true)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.fireTimersMs(0)
     env.setSessionIds(['s1'])
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false, pendingInteraction: 'plan-review' }) }, current: 's1', jobsBySession: {} })
@@ -930,7 +962,7 @@ const turnEnd = (sid, kind) => ({
   // 13) a live session whose turn/end never arrives still rings (deferred fallback)
   {
     const env = makeEnv(undefined)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.setOpen('s1', 'open')
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })
@@ -942,7 +974,7 @@ const turnEnd = (sid, kind) => ({
   }
   {
     const env = makeEnv(undefined)
-    env.exportsObj.apply(env.ctx)
+    applyClient(env)
     env.setOpen('s1', 'open')
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: true }) }, current: 's1', jobsBySession: {} })
     env.drive({ ids: ['s1'], byId: { s1: env.row({ running: false }) }, current: 's1', jobsBySession: {} })

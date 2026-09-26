@@ -5,6 +5,27 @@ The entries below 0.1.0 are the upstream history (translated to English); they a
 provenance of the event-detection engine stays readable. Upstream changes are pulled with
 `git fetch upstream && git merge upstream/main`.
 
+## 0.2.1 (fork) — hotfix: apply() no longer throws without inject
+
+0.2.0 read `ctx.uiSession` directly in the apply body while the client `inject` list was still
+`['slots', 'sessions', 'connection', 'locale']`. A cordis context is a proxy that throws on the
+*read* of a service it was not given (`cannot get property "uiSession" without inject`), so the
+`if (ctx.uiSession && ...)` guard could not protect itself: applying the plugin failed outright,
+which silenced **every** sound on a surface that publishes `uiSession` (the mini web UI), not just
+pending-request ringing.
+
+- Removed the direct read. The scoped `ctx.inject(['uiSession'], cb)` already runs as soon as the
+  service is available, so the pending-interaction watcher behaves identically where `uiSession`
+  exists and is simply never started where it does not. `uiSession` is deliberately **not** added
+  to the plugin's `inject`: that would gate the entire plugin, and all sounds, on a service the
+  mobile surface does not publish.
+- `tools/test-client.mjs` now models the rule that caught this, which is also why 117 assertions
+  did not: the fake ctx exposed `uiSession` as a plain property and had no top-level `ctx.inject`,
+  so the only reachable branch was the buggy one. Service reads now go through a proxy that throws
+  for anything undeclared, `uiSession` is reachable only via `ctx.inject(['uiSession'], ...)`, and
+  applying the client is routed through a guard so an apply-time throw is reported as a failure
+  instead of a bare stack trace.
+
 ## 0.2.0 (fork) — every event fires on DSH 0.1.5-rc.3
 
 The upstream watcher was written against a DSH client that this build no longer has: it needs
